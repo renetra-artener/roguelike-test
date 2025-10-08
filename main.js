@@ -88,11 +88,11 @@ const CONFIG = {
     "AREA_UP":          {"ratio": 0.1}
   },
   "enemyArchetypes": {
-    "ZOMBIE":  {"hp": 8,   "moveSpeed": 120, "contactDmg": 4},
-    "RUNNER":  {"hp": 6,   "moveSpeed": 180, "contactDmg": 3},
-    "SHOOTER": {"hp": 10,  "moveSpeed": 100, "contactDmg": 2, "shootCd": 1.5, "bulletDmg": 6, "bulletSpeed": 380},
-    "TANK":    {"hp": 28,  "moveSpeed": 80,  "contactDmg": 8, "knockbackResist": 0.5},
-    "SWARM":   {"hp": 3,   "moveSpeed": 160, "contactDmg": 2},
+    "ZOMBIE":  {"hp": 8,   "moveSpeed": 60,  "contactDmg": 4},
+    "RUNNER":  {"hp": 6,   "moveSpeed": 90,  "contactDmg": 3},
+    "SHOOTER": {"hp": 10,  "moveSpeed": 50,  "contactDmg": 2, "shootCd": 1.5, "bulletDmg": 6, "bulletSpeed": 380},
+    "TANK":    {"hp": 28,  "moveSpeed": 40,  "contactDmg": 8, "knockbackResist": 0.5},
+    "SWARM":   {"hp": 3,   "moveSpeed": 80,  "contactDmg": 2},
     "MINIBOSS":{"hp": 160, "moveSpeed": 110, "contactDmg": 10, "shootCd": 1.2, "bulletDmg": 10},
     "BOSS":    {"hp": 500, "moveSpeed": 120, "contactDmg": 12, "shootCd": 1.0, "bulletDmg": 14}
   },
@@ -188,6 +188,23 @@ const ENEMY_VARIANTS = {
   D: { label: 'D', baseKind: 'RUNNER', baseHp: 6, moveSpeedMul: 1.5, contactDmgMul: 1 },
   E: { label: 'E', baseKind: 'TANK', baseHp: 25, moveSpeedMul: 0.9, contactDmgMul: 1.2 }
 };
+
+const ENEMY_COLORS = {
+  A: '#d3d3d3',
+  B: '#e53935',
+  C: '#1e88e5',
+  D: '#43a047',
+  E: '#8e24aa',
+  SHOOTER: '#e53935',
+  ZOMBIE: '#d3d3d3',
+  RUNNER: '#43a047',
+  TANK: '#8e24aa',
+  SWARM: '#1e88e5',
+  MINIBOSS: '#ff7043',
+  BOSS: '#fdd835'
+};
+
+const ENEMY_BULLET_SPEED_SCALE = 0.65;
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
@@ -587,7 +604,7 @@ function createEnemy(template) {
       shootCd: base.shootCd || 0,
       shootTimer: base.shootCd || 0,
       bulletDmg: base.bulletDmg || 0,
-      bulletSpeed: base.bulletSpeed || 320,
+      bulletSpeed: (base.bulletSpeed || 320) * ENEMY_BULLET_SPEED_SCALE,
       knockbackResist: base.knockbackResist || 0
     };
     const t = state.time;
@@ -609,7 +626,8 @@ function createEnemy(template) {
   const contactDmg = base.contactDmg * contactMul * (profile.damageScale || 1);
   const shootCdBase = base.shootCd ? base.shootCd * (variant.shootCdMul || 1) : 0;
   const bulletDmgBase = base.bulletDmg ? base.bulletDmg * (variant.bulletDmgMul || 1) * (profile.damageScale || 1) : 0;
-  const bulletSpeed = base.bulletSpeed ? base.bulletSpeed * (variant.bulletSpeedMul || 1) : 320;
+  const baseBulletSpeed = base.bulletSpeed ? base.bulletSpeed * (variant.bulletSpeedMul || 1) : 320;
+  const bulletSpeed = baseBulletSpeed * ENEMY_BULLET_SPEED_SCALE;
 
   const enemy = {
     kind: variant.baseKind,
@@ -1480,7 +1498,9 @@ function drawEnemies() {
   for (const enemy of state.enemies) {
     if (enemy.dead) continue;
     const screen = worldToScreen(enemy.pos);
-    ctx.fillStyle = '#e53935';
+    const colorKey = enemy.variant || enemy.kind;
+    const fillColor = ENEMY_COLORS[colorKey] || ENEMY_COLORS[enemy.kind] || '#e53935';
+    ctx.fillStyle = fillColor;
     ctx.beginPath();
     ctx.arc(screen.x, screen.y, 14, 0, TWO_PI);
     ctx.fill();
