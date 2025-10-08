@@ -34,7 +34,9 @@ const CONFIG = {
   },
   "scaling": {
     "enemyHpAlphaPerSec": 0.004,
-    "enemyDpsAlphaPerSec": 0.002
+    "enemyDpsAlphaPerSec": 0.002,
+    "enemyHpDifficultyBase": 1.08,
+    "enemyHpDifficultyRamp": 0.01
   },
   "chest": {
     "spawnEverySec": 30,
@@ -516,6 +518,17 @@ function pickEnemyVariant() {
   return state.rng.weightedPick(profile.entries);
 }
 
+function getDifficultyHpMultiplier(level) {
+  const scaling = CONFIG.scaling;
+  const clampedLevel = clamp(level || 1, 1, MAX_DIFFICULTY_LEVEL);
+  const exponent = clampedLevel - 1;
+  if (exponent <= 0) return 1;
+  const base = scaling.enemyHpDifficultyBase || 1.08;
+  const ramp = scaling.enemyHpDifficultyRamp || 0;
+  const growthBase = Math.max(1.01, base + ramp * exponent);
+  return Math.pow(growthBase, exponent);
+}
+
 function buildSpawnProfile(level) {
   const clampedLevel = clamp(level, 1, MAX_DIFFICULTY_LEVEL);
   const weights = { A: 1, B: 0, C: 0, D: 0, E: 0 };
@@ -559,7 +572,7 @@ function buildSpawnProfile(level) {
   }
 
   const spawnRateMultiplier = 1 + (clampedLevel - 1) * 0.12;
-  const hpScale = 1 + (clampedLevel - 1) * 0.18;
+  const hpScale = getDifficultyHpMultiplier(clampedLevel);
   const damageScale = 1 + (clampedLevel - 1) * 0.1;
   const speedScale = 1 + Math.max(0, clampedLevel - 3) * 0.05;
 
@@ -607,6 +620,8 @@ function createEnemy(template) {
       bulletSpeed: (base.bulletSpeed || 320) * ENEMY_BULLET_SPEED_SCALE,
       knockbackResist: base.knockbackResist || 0
     };
+    const difficultyMultiplier = getDifficultyHpMultiplier(state.difficultyLevel || 1);
+    enemy.hp *= difficultyMultiplier;
     const t = state.time;
     const hpScale = 1 + CONFIG.scaling.enemyHpAlphaPerSec * t;
     const dmgScale = 1 + CONFIG.scaling.enemyDpsAlphaPerSec * t;
@@ -1284,7 +1299,16 @@ function addMultiplier(kind) {
   if (existing) {
     existing.level++;
   } else {
-    player.multipliers.push({ kind, level: 1, value: data.start, chainSec: 0, accum: 0 });
+    const initialState = {
+      kind,
+      level: 1,
+      value: data.start,
+      chainSec: 0,
+      accum: 0,
+      eventCount: 0,
+      lastGain: 0
+    };
+    player.multipliers.push(initialState);
   }
   addEventLog(`${kind} multiplier ready`);
 }
@@ -1340,6 +1364,28 @@ function addOtherItem(kind) {
   addEventLog(`Item ${kind} acquired`);
 }
 
+function computeAcceleratedGain(mult, data, baseGain, events = 1) {
+  if (!mult) return 0;
+  if (baseGain <= 0 || events <= 0) return 0;
+  const levelFactor = Math.pow(2, Math.max(0, mult.level - 1));
+  const growthRateBase = Math.max(
+    1.01,
+    1 + (data.exponentialGrowth || data.perLevelAccel || 0.01)
+  );
+  const startEvent = mult.eventCount || 0;
+  const growthPower = Math.pow(growthRateBase, startEvent);
+  let seriesMultiplier;
+  if (Math.abs(growthRateBase - 1) < 1e-6) {
+    seriesMultiplier = events;
+  } else {
+    seriesMultiplier = (Math.pow(growthRateBase, events) - 1) / (growthRateBase - 1);
+  }
+  const totalGain = baseGain * levelFactor * growthPower * seriesMultiplier;
+  mult.eventCount = startEvent + events;
+  mult.lastGain = baseGain * levelFactor * Math.pow(growthRateBase, mult.eventCount - 1);
+  return totalGain;
+}
+
 function updateMultipliers(dt, moving) {
   const player = state.player;
 
@@ -1354,12 +1400,12 @@ function updateMultipliers(dt, moving) {
           const ticks = Math.floor(mult.chainSec / stopInterval);
           mult.chainSec -= ticks * stopInterval;
           const data = CONFIG.multipliers.STOP;
-          const gainPerSecond = data.perSecAdd * (1 + data.perLevelAccel * (mult.level - 1));
-          const gainPerTick = gainPerSecond * stopInterval;
-
-          const totalGain = gainPerTick * ticks;
+          const baseGain = data.perSecAdd * stopInterval;
+          const totalGain = computeAcceleratedGain(mult, data, baseGain, ticks);
           mult.value += totalGain;
-          addEventLog(`STOP +${totalGain.toFixed(3)} → ×${mult.value.toFixed(3)}`);
+          const gainText = totalGain >= 1000 ? formatNumber(totalGain) : totalGain.toFixed(3);
+          const valueText = mult.value >= 1000 ? formatNumber(mult.value) : mult.value.toFixed(3);
+          addEventLog(`STOP +${gainText} → ×${valueText}`);
         }
       } else {
         mult.chainSec = 0;
@@ -1385,24 +1431,27 @@ function applyMultiplierEvent(type) {
   const mult = player.multipliers.find((m) => m.kind === type);
   if (!mult) return;
   const data = CONFIG.multipliers[type];
-  let gain = 0;
+  let baseGain = 0;
   switch (type) {
     case 'KILL':
-      gain = data.perKillAdd * (1 + data.perLevelAccel * (mult.level - 1));
+      baseGain = data.perKillAdd;
       break;
     case 'CHEST':
-      gain = data.perOpenAdd * (1 + data.perLevelAccel * (mult.level - 1));
+      baseGain = data.perOpenAdd;
       break;
     case 'PILLAR':
-      gain = data.perBreakAdd * (1 + data.perLevelAccel * (mult.level - 1));
+      baseGain = data.perBreakAdd;
       break;
     case 'STOP':
-      gain = 0; // handled elsewhere
+      baseGain = 0; // handled elsewhere
       break;
   }
-  if (gain > 0) {
+  if (baseGain > 0) {
+    const gain = computeAcceleratedGain(mult, data, baseGain, 1);
     mult.value += gain;
-    addEventLog(`${type} +${gain.toFixed(3)} → ×${mult.value.toFixed(3)}`);
+    const gainText = gain >= 1000 ? formatNumber(gain) : gain.toFixed(3);
+    const valueText = mult.value >= 1000 ? formatNumber(mult.value) : mult.value.toFixed(3);
+    addEventLog(`${type} +${gainText} → ×${valueText}`);
   }
 }
 
@@ -1487,11 +1536,59 @@ function drawBackground() {
 }
 
 function drawPlayer() {
-  const screen = worldToScreen(state.player.pos);
+  const player = state.player;
+  drawSatelliteOrbs(player);
+  const screen = worldToScreen(player.pos);
   ctx.fillStyle = '#4caf50';
   ctx.beginPath();
   ctx.arc(screen.x, screen.y, 16, 0, TWO_PI);
   ctx.fill();
+}
+
+function drawSatelliteOrbs(player) {
+  if (!player) return;
+  const drawnRings = new Set();
+  for (const weapon of player.weapons) {
+    if (weapon.kind !== 'SATELLITE') continue;
+    const data = getWeaponData(weapon);
+    const orbitCount = data.orbs + (weapon.internal.extraOrbs || 0);
+    if (orbitCount <= 0) continue;
+    const radius = data.orbitR * player.areaMul;
+    const angleStep = TWO_PI / orbitCount;
+    for (let i = 0; i < orbitCount; i++) {
+      const angle = weapon.internal.orbitAngle + angleStep * i;
+      const x = player.pos.x + Math.cos(angle) * radius;
+      const y = player.pos.y + Math.sin(angle) * radius;
+      const screen = worldToScreen({ x, y });
+      const pulse = 1 + Math.sin((state.time + i * 0.2) * 6) * 0.2;
+      const orbRadius = 10 * pulse;
+      const gradient = ctx.createRadialGradient(screen.x, screen.y, 2, screen.x, screen.y, orbRadius);
+      gradient.addColorStop(0, 'rgba(187, 222, 251, 0.95)');
+      gradient.addColorStop(0.6, 'rgba(66, 165, 245, 0.5)');
+      gradient.addColorStop(1, 'rgba(25, 118, 210, 0.1)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, orbRadius, 0, TWO_PI);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(227, 242, 253, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, orbRadius * 0.55, 0, TWO_PI);
+      ctx.stroke();
+    }
+
+    const radiusKey = Math.round(radius);
+    if (!drawnRings.has(radiusKey)) {
+      drawnRings.add(radiusKey);
+      const playerScreen = worldToScreen(player.pos);
+      ctx.strokeStyle = 'rgba(144, 202, 249, 0.35)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(playerScreen.x, playerScreen.y, radius, 0, TWO_PI);
+      ctx.stroke();
+    }
+  }
 }
 
 function drawEnemies() {
