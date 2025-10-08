@@ -168,6 +168,7 @@ class RNG {
   }
 }
 
+
 const DIFFICULTY_INTERVAL = 20;
 const MAX_DIFFICULTY_LEVEL = 20;
 
@@ -187,12 +188,12 @@ const ENEMY_VARIANTS = {
   D: { label: 'D', baseKind: 'RUNNER', baseHp: 6, moveSpeedMul: 1.5, contactDmgMul: 1 },
   E: { label: 'E', baseKind: 'TANK', baseHp: 25, moveSpeedMul: 0.9, contactDmgMul: 1.2 }
 };
-
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
 const levelUpOverlay = document.getElementById('levelUpOverlay');
 const levelUpTitle = document.getElementById('levelUpTitle');
+
 const levelUpOptions = document.getElementById('levelUpOptions');
 const skipLevelUpBtn = document.getElementById('skipLevelUp');
 const messageOverlay = document.getElementById('messageOverlay');
@@ -273,6 +274,7 @@ function initGame(cfg) {
   state.bossSpawned = false;
   state.victory = false;
   state.defeat = false;
+
   state.currentChoices = [];
   state.awaitingLevelChoice = false;
   state.rerolls = 2;
@@ -300,6 +302,7 @@ function initGame(cfg) {
     regenTimer: 0,
     regenPerSec: 0,
     autoHealCd: 0,
+
     lastPos: { x: 0, y: 0 },
     totalMultiplier: 1
   };
@@ -391,6 +394,7 @@ function update(dt) {
   player.lastPos.y = player.pos.y;
 
   updateMultipliers(dt, moving);
+
   updateDifficulty();
 
   state.camera.x = lerp(state.camera.x, player.pos.x, CONFIG.general.cameraFollowSmoothing);
@@ -452,6 +456,7 @@ function updatePillars(dt) {
 function spawnEnemies(dt) {
   const cfg = CONFIG.spawn;
   state.spawnTimer += dt;
+
   const profile = state.spawnProfile || buildSpawnProfile(state.difficultyLevel || 1);
   const baseRate = lerp(cfg.enemiesPerSecStart, cfg.enemiesPerSecEnd, clamp(state.time / cfg.progressToEndSec, 0, 1));
   const rate = baseRate * (profile.spawnRateMultiplier || 1);
@@ -459,6 +464,7 @@ function spawnEnemies(dt) {
   while (state.spawnTimer >= interval) {
     state.spawnTimer -= interval;
     if (state.enemies.length >= CONFIG.caps.maxEnemies) break;
+
     const variant = pickEnemyVariant();
     if (!variant) break;
     const enemy = createEnemy(variant);
@@ -485,6 +491,7 @@ function spawnEnemies(dt) {
     state.enemies.push(boss);
   }
 }
+
 
 function pickEnemyVariant() {
   const profile = state.spawnProfile;
@@ -555,6 +562,7 @@ function buildSpawnProfile(level) {
     damageScale,
     speedScale
   };
+
 }
 
 function randomPointOnRing(radius) {
@@ -564,6 +572,7 @@ function randomPointOnRing(radius) {
     y: state.player.pos.y + Math.sin(angle) * radius
   };
 }
+
 
 function createEnemy(template) {
   if (typeof template === 'string') {
@@ -806,7 +815,9 @@ function fireBulletTowards(origin, target, dmg, speed, range, weaponState, sprea
 function swingArc(origin, dmg, radius, arcDeg, target) {
   const facing = target ? Math.atan2(target.pos.y - origin.y, target.pos.x - origin.x) : 0;
   const enemies = state.enemies;
+
   const halfArc = (arcDeg * Math.PI) / 360;
+
   for (const enemy of enemies) {
     const dx = enemy.pos.x - origin.x;
     const dy = enemy.pos.y - origin.y;
@@ -814,6 +825,7 @@ function swingArc(origin, dmg, radius, arcDeg, target) {
     if (dist > radius) continue;
     const angleToEnemy = Math.atan2(dy, dx);
     const angleDiff = Math.abs(((angleToEnemy - facing + Math.PI) % TWO_PI) - Math.PI);
+
     if (angleDiff <= halfArc) {
       dealDamageToEnemy(enemy, dmg);
     }
@@ -826,12 +838,15 @@ function swingArc(origin, dmg, radius, arcDeg, target) {
     endAngle: facing + halfArc,
     ttl: 0.18
   });
+
 }
 
 function thrustCone(origin, dmg, length, arcDeg, target) {
   const facing = target ? Math.atan2(target.pos.y - origin.y, target.pos.x - origin.x) : 0;
   const enemies = state.enemies;
+
   const halfArc = (arcDeg * Math.PI) / 360;
+
   for (const enemy of enemies) {
     const dx = enemy.pos.x - origin.x;
     const dy = enemy.pos.y - origin.y;
@@ -839,6 +854,7 @@ function thrustCone(origin, dmg, length, arcDeg, target) {
     if (dist > length) continue;
     const angle = Math.atan2(dy, dx);
     const diff = Math.abs(((angle - facing + Math.PI) % TWO_PI) - Math.PI);
+
     if (diff <= halfArc) {
       dealDamageToEnemy(enemy, dmg);
     }
@@ -851,6 +867,7 @@ function thrustCone(origin, dmg, length, arcDeg, target) {
     arc: halfArc * 2,
     ttl: 0.18
   });
+
 }
 
 function launchBomb(origin, dmg, radius, coneDeg, target) {
@@ -961,7 +978,9 @@ function handleCollisions() {
   // XP pickup
   for (const orb of state.xpOrbs) {
     const dist = Math.hypot(orb.pos.x - player.pos.x, orb.pos.y - player.pos.y);
+
     if (dist <= 18) {
+
       player.xp += orb.value;
       orb.value = 0;
     }
@@ -972,9 +991,11 @@ function handleCollisions() {
   for (const chest of state.chests) {
     const dist = Math.hypot(chest.pos.x - player.pos.x, chest.pos.y - player.pos.y);
     if (dist <= 40) {
+
       if (openChest(chest)) {
         chest.opened = true;
       }
+
     }
   }
   state.chests = state.chests.filter((c) => !c.opened);
@@ -1012,6 +1033,7 @@ function dealDamageToEnemy(enemy, amount) {
 
 function onEnemyKilled(enemy) {
   const orbValue = CONFIG.xp.orbValue;
+
   state.xpOrbs.push({
     pos: { x: enemy.pos.x, y: enemy.pos.y },
     value: orbValue,
@@ -1019,6 +1041,7 @@ function onEnemyKilled(enemy) {
     minSpeed: 0,
     homing: false
   });
+
   applyMultiplierEvent('KILL');
   if (enemy.kind === 'MINIBOSS' || enemy.kind === 'BOSS' || state.pendingChestGuarantee) {
     state.pendingChestGuarantee = false;
@@ -1039,8 +1062,10 @@ function computeNextXp(level) {
 }
 
 function triggerLevelUp() {
+
   const choices = levelUpRoll();
   presentChoiceOverlay('LEVEL_UP', choices);
+
 }
 
 function updateXpOrbs(dt) {
@@ -1050,6 +1075,7 @@ function updateXpOrbs(dt) {
     const dx = player.pos.x - orb.pos.x;
     const dy = player.pos.y - orb.pos.y;
     const dist = Math.hypot(dx, dy);
+
     const magnetRadius = pickupRadius * 1.5;
     if (!orb.homing && dist <= magnetRadius) {
       orb.homing = true;
@@ -1070,6 +1096,7 @@ function updateXpOrbs(dt) {
       // Maintain a rising minimum so the chain stays snappy even if the player retreats.
       const nextFloor = Math.min(travelSpeed, floorSpeed + 900 * dt);
       orb.minSpeed = Math.max(floorSpeed, nextFloor);
+
     }
   }
 }
@@ -1133,6 +1160,7 @@ function levelUpRoll() {
   return choices;
 }
 
+
 function presentChoiceOverlay(context, options) {
   state.currentChoices = options;
   state.choiceContext = context;
@@ -1185,8 +1213,10 @@ function hideLevelUp() {
   levelUpOverlay.style.display = 'none';
   state.paused = false;
   state.awaitingLevelChoice = false;
+
   state.currentChoices = [];
   state.choiceContext = null;
+
 }
 
 function applyChoice(choice) {
@@ -1294,17 +1324,21 @@ function addOtherItem(kind) {
 
 function updateMultipliers(dt, moving) {
   const player = state.player;
+
   const stopInterval = 0.2;
+
   for (const mult of player.multipliers) {
     if (mult.kind === 'STOP') {
       if (!moving) {
         mult.chainSec += dt;
+
         if (mult.chainSec >= stopInterval) {
           const ticks = Math.floor(mult.chainSec / stopInterval);
           mult.chainSec -= ticks * stopInterval;
           const data = CONFIG.multipliers.STOP;
           const gainPerSecond = data.perSecAdd * (1 + data.perLevelAccel * (mult.level - 1));
           const gainPerTick = gainPerSecond * stopInterval;
+
           const totalGain = gainPerTick * ticks;
           mult.value += totalGain;
           addEventLog(`STOP +${totalGain.toFixed(3)} → ×${mult.value.toFixed(3)}`);
@@ -1355,12 +1389,14 @@ function applyMultiplierEvent(type) {
 }
 
 function openChest(chest) {
+
   if (state.awaitingLevelChoice) return false;
   applyMultiplierEvent('CHEST');
   addEventLog('Chest opened!');
   const choices = levelUpRoll();
   presentChoiceOverlay('CHEST', choices);
   return true;
+
 }
 
 function breakPillar() {
@@ -1402,7 +1438,9 @@ function render() {
   drawEnemies();
   drawEnemyBullets();
   drawPlayerBullets();
+
   drawMeleeIndicators();
+
   drawPlayer();
   drawHud();
   ctx.restore();
@@ -1512,6 +1550,7 @@ function drawMeleeIndicators() {
   }
   ctx.restore();
 }
+
 
 function drawXpOrbs() {
   ctx.fillStyle = '#ffee58';
