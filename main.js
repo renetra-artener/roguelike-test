@@ -1012,7 +1012,13 @@ function dealDamageToEnemy(enemy, amount) {
 
 function onEnemyKilled(enemy) {
   const orbValue = CONFIG.xp.orbValue;
-  state.xpOrbs.push({ pos: { x: enemy.pos.x, y: enemy.pos.y }, value: orbValue, speed: 0, homing: false });
+  state.xpOrbs.push({
+    pos: { x: enemy.pos.x, y: enemy.pos.y },
+    value: orbValue,
+    speed: 0,
+    minSpeed: 0,
+    homing: false
+  });
   applyMultiplierEvent('KILL');
   if (enemy.kind === 'MINIBOSS' || enemy.kind === 'BOSS' || state.pendingChestGuarantee) {
     state.pendingChestGuarantee = false;
@@ -1044,20 +1050,26 @@ function updateXpOrbs(dt) {
     const dx = player.pos.x - orb.pos.x;
     const dy = player.pos.y - orb.pos.y;
     const dist = Math.hypot(dx, dy);
-    const magnetRadius = pickupRadius * 1.35;
+    const magnetRadius = pickupRadius * 1.5;
     if (!orb.homing && dist <= magnetRadius) {
       orb.homing = true;
-      orb.speed = Math.max(orb.speed || 0, 280);
+      orb.speed = Math.max(orb.speed || 0, 420);
+      orb.minSpeed = Math.max(orb.minSpeed || 0, 640);
     }
     if (orb.homing && dist > 0.0001) {
-      const closeness = clamp((magnetRadius - dist) / magnetRadius, 0, 1);
-      const accel = 1600 + 2400 * closeness;
-      orb.speed = Math.min((orb.speed || 0) + accel * dt, 1600);
-      const travelSpeed = Math.max(360, orb.speed);
+      // Ramping acceleration keeps the pickup feeling like a rapid chain.
+      const pull = clamp(1 - dist / (magnetRadius * 1.25), 0, 1);
+      const accel = 2600 + 4200 * pull;
+      orb.speed = Math.min((orb.speed || 0) + accel * dt, 2200);
+      const floorSpeed = orb.minSpeed || 640;
+      const travelSpeed = Math.max(floorSpeed, orb.speed);
       const nx = dx / dist;
       const ny = dy / dist;
       orb.pos.x += nx * travelSpeed * dt;
       orb.pos.y += ny * travelSpeed * dt;
+      // Maintain a rising minimum so the chain stays snappy even if the player retreats.
+      const nextFloor = Math.min(travelSpeed, floorSpeed + 900 * dt);
+      orb.minSpeed = Math.max(floorSpeed, nextFloor);
     }
   }
 }
