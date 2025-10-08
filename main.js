@@ -168,10 +168,32 @@ class RNG {
   }
 }
 
+
+const DIFFICULTY_INTERVAL = 20;
+const MAX_DIFFICULTY_LEVEL = 20;
+
+const ENEMY_VARIANTS = {
+  A: { label: 'A', baseKind: 'SWARM', baseHp: 2, moveSpeedMul: 1, contactDmgMul: 0.8 },
+  B: {
+    label: 'B',
+    baseKind: 'SHOOTER',
+    baseHp: 1,
+    moveSpeedMul: 1,
+    shootCdMul: 1,
+    bulletDmgMul: 0.7,
+    bulletSpeedMul: 0.9,
+    contactDmgMul: 0.5
+  },
+  C: { label: 'C', baseKind: 'ZOMBIE', baseHp: 8, moveSpeedMul: 1 },
+  D: { label: 'D', baseKind: 'RUNNER', baseHp: 6, moveSpeedMul: 1.5, contactDmgMul: 1 },
+  E: { label: 'E', baseKind: 'TANK', baseHp: 25, moveSpeedMul: 0.9, contactDmgMul: 1.2 }
+};
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
 const levelUpOverlay = document.getElementById('levelUpOverlay');
+const levelUpTitle = document.getElementById('levelUpTitle');
+
 const levelUpOptions = document.getElementById('levelUpOptions');
 const skipLevelUpBtn = document.getElementById('skipLevelUp');
 const messageOverlay = document.getElementById('messageOverlay');
@@ -219,10 +241,14 @@ const state = {
   bossSpawned: false,
   victory: false,
   defeat: false,
-  levelUpChoices: [],
   awaitingLevelChoice: false,
   rerolls: 2,
-  pendingChestGuarantee: false
+  pendingChestGuarantee: false,
+  difficultyLevel: 1,
+  spawnProfile: null,
+  choiceContext: null,
+  currentChoices: [],
+  meleeIndicators: []
 };
 
 function initGame(cfg) {
@@ -248,10 +274,15 @@ function initGame(cfg) {
   state.bossSpawned = false;
   state.victory = false;
   state.defeat = false;
-  state.levelUpChoices = [];
+
+  state.currentChoices = [];
   state.awaitingLevelChoice = false;
   state.rerolls = 2;
   state.pendingChestGuarantee = false;
+  state.difficultyLevel = 1;
+  state.spawnProfile = buildSpawnProfile(1);
+  state.choiceContext = null;
+  state.meleeIndicators.length = 0;
 
   const player = {
     pos: { x: 0, y: 0 },
@@ -271,8 +302,7 @@ function initGame(cfg) {
     regenTimer: 0,
     regenPerSec: 0,
     autoHealCd: 0,
-    stopChainTimer: 0,
-    stopAccum: 0,
+
     lastPos: { x: 0, y: 0 },
     totalMultiplier: 1
   };
@@ -365,6 +395,8 @@ function update(dt) {
 
   updateMultipliers(dt, moving);
 
+  updateDifficulty();
+
   state.camera.x = lerp(state.camera.x, player.pos.x, CONFIG.general.cameraFollowSmoothing);
   state.camera.y = lerp(state.camera.y, player.pos.y, CONFIG.general.cameraFollowSmoothing);
 
@@ -378,10 +410,35 @@ function update(dt) {
   updatePlayerBullets(dt);
   handleCollisions();
   updateXpOrbs(dt);
+  updateMeleeIndicators(dt);
   updatePillars(dt);
 
   updateTimersAndEvents(dt);
   checkWinLoseConditions();
+}
+
+function updateDifficulty() {
+  const targetLevel = Math.min(Math.floor(state.time / DIFFICULTY_INTERVAL) + 1, MAX_DIFFICULTY_LEVEL);
+  if (!state.spawnProfile || state.difficultyLevel !== targetLevel) {
+    state.difficultyLevel = targetLevel;
+    state.spawnProfile = buildSpawnProfile(targetLevel);
+    if (state.time > 0) {
+      addEventLog(`Difficulty Lv${targetLevel}`);
+    }
+  }
+}
+
+function updateMeleeIndicators(dt) {
+  if (!state.meleeIndicators.length) return;
+  for (const indicator of state.meleeIndicators) {
+    indicator.ttl -= dt;
+  }
+  state.meleeIndicators = state.meleeIndicators.filter((indicator) => indicator.ttl > 0);
+}
+
+function emitMeleeIndicator(indicator) {
+  const ttl = indicator.ttl || 0.18;
+  state.meleeIndicators.push({ ...indicator, ttl, duration: ttl });
 }
 
 function updateTimersAndEvents(dt) {
@@ -399,13 +456,18 @@ function updatePillars(dt) {
 function spawnEnemies(dt) {
   const cfg = CONFIG.spawn;
   state.spawnTimer += dt;
-  const rate = lerp(cfg.enemiesPerSecStart, cfg.enemiesPerSecEnd, clamp(state.time / cfg.progressToEndSec, 0, 1));
+
+  const profile = state.spawnProfile || buildSpawnProfile(state.difficultyLevel || 1);
+  const baseRate = lerp(cfg.enemiesPerSecStart, cfg.enemiesPerSecEnd, clamp(state.time / cfg.progressToEndSec, 0, 1));
+  const rate = baseRate * (profile.spawnRateMultiplier || 1);
   const interval = 1 / Math.max(rate, 0.01);
   while (state.spawnTimer >= interval) {
     state.spawnTimer -= interval;
     if (state.enemies.length >= CONFIG.caps.maxEnemies) break;
-    const kind = pickEnemyType();
-    const enemy = createEnemy(kind);
+
+    const variant = pickEnemyVariant();
+    if (!variant) break;
+    const enemy = createEnemy(variant);
     state.enemies.push(enemy);
   }
   // Mini bosses
@@ -430,11 +492,77 @@ function spawnEnemies(dt) {
   }
 }
 
-function pickEnemyType() {
-  const types = ['ZOMBIE', 'RUNNER', 'SHOOTER', 'TANK', 'SWARM'];
-  const weights = [3, 2, 1, 1, 2];
-  const entries = types.map((t, i) => ({ value: t, weight: weights[i] }));
-  return state.rng.weightedPick(entries);
+
+function pickEnemyVariant() {
+  const profile = state.spawnProfile;
+  if (!profile || !profile.entries.length) return null;
+  return state.rng.weightedPick(profile.entries);
+}
+
+function buildSpawnProfile(level) {
+  const clampedLevel = clamp(level, 1, MAX_DIFFICULTY_LEVEL);
+  const weights = { A: 1, B: 0, C: 0, D: 0, E: 0 };
+  const ensureWeight = (key, value) => {
+    weights[key] = Math.max(weights[key] || 0, value);
+  };
+
+  for (let lv = 2; lv <= clampedLevel; lv++) {
+    switch (lv) {
+      case 2:
+        weights.A *= 1.2;
+        ensureWeight('B', 0.35);
+        break;
+      case 3:
+        weights.B = weights.B > 0 ? weights.B * 2 : 0.7;
+        weights.A *= 1.2;
+        ensureWeight('C', 0.5);
+        break;
+      case 4:
+        weights.C = weights.C > 0 ? weights.C * 2 : 1;
+        ensureWeight('D', 0.45);
+        break;
+      case 5:
+        if (weights.C > 0) weights.C *= 2;
+        if (weights.D > 0) weights.D *= 2;
+        if (weights.B > 0) weights.B *= 1.2;
+        break;
+      case 6:
+        weights.A = 0;
+        if (weights.C > 0) weights.C *= 1.2;
+        if (weights.D > 0) weights.D *= 1.2;
+        ensureWeight('E', 0.4);
+        break;
+      default:
+        weights.B *= 1.1;
+        weights.C *= 1.15;
+        weights.D *= 1.15;
+        weights.E *= 1.2;
+        break;
+    }
+  }
+
+  const spawnRateMultiplier = 1 + (clampedLevel - 1) * 0.12;
+  const hpScale = 1 + (clampedLevel - 1) * 0.18;
+  const damageScale = 1 + (clampedLevel - 1) * 0.1;
+  const speedScale = 1 + Math.max(0, clampedLevel - 3) * 0.05;
+
+  const entries = [];
+  for (const key of Object.keys(weights)) {
+    const weight = weights[key];
+    if (weight <= 0) continue;
+    const variant = { ...ENEMY_VARIANTS[key] };
+    entries.push({ value: variant, weight });
+  }
+
+  return {
+    level: clampedLevel,
+    entries,
+    spawnRateMultiplier,
+    hpScale,
+    damageScale,
+    speedScale
+  };
+
 }
 
 function randomPointOnRing(radius) {
@@ -445,21 +573,59 @@ function randomPointOnRing(radius) {
   };
 }
 
-function createEnemy(kind) {
-  const base = CONFIG.enemyArchetypes[kind];
+
+function createEnemy(template) {
+  if (typeof template === 'string') {
+    const base = CONFIG.enemyArchetypes[template];
+    const enemy = {
+      kind: template,
+      pos: randomPointOnRing(CONFIG.spawn.ringRadius),
+      hp: base.hp,
+      baseHp: base.hp,
+      moveSpeed: base.moveSpeed,
+      contactDmg: base.contactDmg,
+      shootCd: base.shootCd || 0,
+      shootTimer: base.shootCd || 0,
+      bulletDmg: base.bulletDmg || 0,
+      bulletSpeed: base.bulletSpeed || 320,
+      knockbackResist: base.knockbackResist || 0
+    };
+    const t = state.time;
+    const hpScale = 1 + CONFIG.scaling.enemyHpAlphaPerSec * t;
+    const dmgScale = 1 + CONFIG.scaling.enemyDpsAlphaPerSec * t;
+    enemy.hp *= hpScale;
+    enemy.baseHp = enemy.hp;
+    enemy.contactDmg *= dmgScale;
+    if (enemy.bulletDmg) enemy.bulletDmg *= dmgScale;
+    return enemy;
+  }
+
+  const variant = template;
+  const base = CONFIG.enemyArchetypes[variant.baseKind];
+  const profile = state.spawnProfile || buildSpawnProfile(state.difficultyLevel || 1);
+  const hpBase = (variant.baseHp ?? base.hp) * (profile.hpScale || 1);
+  const moveSpeed = base.moveSpeed * (variant.moveSpeedMul || 1) * (profile.speedScale || 1);
+  const contactMul = variant.contactDmgMul || 1;
+  const contactDmg = base.contactDmg * contactMul * (profile.damageScale || 1);
+  const shootCdBase = base.shootCd ? base.shootCd * (variant.shootCdMul || 1) : 0;
+  const bulletDmgBase = base.bulletDmg ? base.bulletDmg * (variant.bulletDmgMul || 1) * (profile.damageScale || 1) : 0;
+  const bulletSpeed = base.bulletSpeed ? base.bulletSpeed * (variant.bulletSpeedMul || 1) : 320;
+
   const enemy = {
-    kind,
+    kind: variant.baseKind,
+    variant: variant.label,
     pos: randomPointOnRing(CONFIG.spawn.ringRadius),
-    hp: base.hp,
-    baseHp: base.hp,
-    moveSpeed: base.moveSpeed,
-    contactDmg: base.contactDmg,
-    shootCd: base.shootCd || 0,
-    shootTimer: base.shootCd || 0,
-    bulletDmg: base.bulletDmg || 0,
-    bulletSpeed: base.bulletSpeed || 320,
+    hp: hpBase,
+    baseHp: hpBase,
+    moveSpeed,
+    contactDmg,
+    shootCd: shootCdBase,
+    shootTimer: shootCdBase ? shootCdBase * state.rng.range(0.3, 1) : 0,
+    bulletDmg: bulletDmgBase,
+    bulletSpeed,
     knockbackResist: base.knockbackResist || 0
   };
+
   const t = state.time;
   const hpScale = 1 + CONFIG.scaling.enemyHpAlphaPerSec * t;
   const dmgScale = 1 + CONFIG.scaling.enemyDpsAlphaPerSec * t;
@@ -506,7 +672,6 @@ function shootEnemyBullet(enemy) {
 
 function updateEnemyBullets(dt) {
   const player = state.player;
-  const contactTick = CONFIG.general.contactTickSec;
   for (const bullet of state.enemyBullets) {
     bullet.life -= dt;
     bullet.pos.x += bullet.vel.x * dt;
@@ -650,6 +815,9 @@ function fireBulletTowards(origin, target, dmg, speed, range, weaponState, sprea
 function swingArc(origin, dmg, radius, arcDeg, target) {
   const facing = target ? Math.atan2(target.pos.y - origin.y, target.pos.x - origin.x) : 0;
   const enemies = state.enemies;
+
+  const halfArc = (arcDeg * Math.PI) / 360;
+
   for (const enemy of enemies) {
     const dx = enemy.pos.x - origin.x;
     const dy = enemy.pos.y - origin.y;
@@ -657,15 +825,28 @@ function swingArc(origin, dmg, radius, arcDeg, target) {
     if (dist > radius) continue;
     const angleToEnemy = Math.atan2(dy, dx);
     const angleDiff = Math.abs(((angleToEnemy - facing + Math.PI) % TWO_PI) - Math.PI);
-    if (angleDiff <= (arcDeg * Math.PI) / 360) {
+
+    if (angleDiff <= halfArc) {
       dealDamageToEnemy(enemy, dmg);
     }
   }
+  emitMeleeIndicator({
+    type: 'arc',
+    center: { x: origin.x, y: origin.y },
+    radius,
+    startAngle: facing - halfArc,
+    endAngle: facing + halfArc,
+    ttl: 0.18
+  });
+
 }
 
 function thrustCone(origin, dmg, length, arcDeg, target) {
   const facing = target ? Math.atan2(target.pos.y - origin.y, target.pos.x - origin.x) : 0;
   const enemies = state.enemies;
+
+  const halfArc = (arcDeg * Math.PI) / 360;
+
   for (const enemy of enemies) {
     const dx = enemy.pos.x - origin.x;
     const dy = enemy.pos.y - origin.y;
@@ -673,10 +854,20 @@ function thrustCone(origin, dmg, length, arcDeg, target) {
     if (dist > length) continue;
     const angle = Math.atan2(dy, dx);
     const diff = Math.abs(((angle - facing + Math.PI) % TWO_PI) - Math.PI);
-    if (diff <= (arcDeg * Math.PI) / 360) {
+
+    if (diff <= halfArc) {
       dealDamageToEnemy(enemy, dmg);
     }
   }
+  emitMeleeIndicator({
+    type: 'cone',
+    center: { x: origin.x, y: origin.y },
+    length,
+    angle: facing,
+    arc: halfArc * 2,
+    ttl: 0.18
+  });
+
 }
 
 function launchBomb(origin, dmg, radius, coneDeg, target) {
@@ -787,7 +978,9 @@ function handleCollisions() {
   // XP pickup
   for (const orb of state.xpOrbs) {
     const dist = Math.hypot(orb.pos.x - player.pos.x, orb.pos.y - player.pos.y);
-    if (dist <= 16) {
+
+    if (dist <= 18) {
+
       player.xp += orb.value;
       orb.value = 0;
     }
@@ -798,8 +991,11 @@ function handleCollisions() {
   for (const chest of state.chests) {
     const dist = Math.hypot(chest.pos.x - player.pos.x, chest.pos.y - player.pos.y);
     if (dist <= 40) {
-      openChest(chest);
-      chest.opened = true;
+
+      if (openChest(chest)) {
+        chest.opened = true;
+      }
+
     }
   }
   state.chests = state.chests.filter((c) => !c.opened);
@@ -837,7 +1033,15 @@ function dealDamageToEnemy(enemy, amount) {
 
 function onEnemyKilled(enemy) {
   const orbValue = CONFIG.xp.orbValue;
-  state.xpOrbs.push({ pos: { x: enemy.pos.x, y: enemy.pos.y }, value: orbValue, speed: 0 });
+
+  state.xpOrbs.push({
+    pos: { x: enemy.pos.x, y: enemy.pos.y },
+    value: orbValue,
+    speed: 0,
+    minSpeed: 0,
+    homing: false
+  });
+
   applyMultiplierEvent('KILL');
   if (enemy.kind === 'MINIBOSS' || enemy.kind === 'BOSS' || state.pendingChestGuarantee) {
     state.pendingChestGuarantee = false;
@@ -858,10 +1062,10 @@ function computeNextXp(level) {
 }
 
 function triggerLevelUp() {
-  state.paused = true;
-  state.awaitingLevelChoice = true;
-  state.levelUpChoices = levelUpRoll();
-  showLevelUp(state.levelUpChoices);
+
+  const choices = levelUpRoll();
+  presentChoiceOverlay('LEVEL_UP', choices);
+
 }
 
 function updateXpOrbs(dt) {
@@ -871,10 +1075,28 @@ function updateXpOrbs(dt) {
     const dx = player.pos.x - orb.pos.x;
     const dy = player.pos.y - orb.pos.y;
     const dist = Math.hypot(dx, dy);
-    if (dist <= pickupRadius && dist > 0.0001) {
-      const speed = clamp(600 / Math.max(dist, 20), 60, 600);
-      orb.pos.x += (dx / dist) * speed * dt;
-      orb.pos.y += (dy / dist) * speed * dt;
+
+    const magnetRadius = pickupRadius * 1.5;
+    if (!orb.homing && dist <= magnetRadius) {
+      orb.homing = true;
+      orb.speed = Math.max(orb.speed || 0, 420);
+      orb.minSpeed = Math.max(orb.minSpeed || 0, 640);
+    }
+    if (orb.homing && dist > 0.0001) {
+      // Ramping acceleration keeps the pickup feeling like a rapid chain.
+      const pull = clamp(1 - dist / (magnetRadius * 1.25), 0, 1);
+      const accel = 2600 + 4200 * pull;
+      orb.speed = Math.min((orb.speed || 0) + accel * dt, 2200);
+      const floorSpeed = orb.minSpeed || 640;
+      const travelSpeed = Math.max(floorSpeed, orb.speed);
+      const nx = dx / dist;
+      const ny = dy / dist;
+      orb.pos.x += nx * travelSpeed * dt;
+      orb.pos.y += ny * travelSpeed * dt;
+      // Maintain a rising minimum so the chain stays snappy even if the player retreats.
+      const nextFloor = Math.min(travelSpeed, floorSpeed + 900 * dt);
+      orb.minSpeed = Math.max(floorSpeed, nextFloor);
+
     }
   }
 }
@@ -938,21 +1160,40 @@ function levelUpRoll() {
   return choices;
 }
 
-function showLevelUp(options) {
+
+function presentChoiceOverlay(context, options) {
+  state.currentChoices = options;
+  state.choiceContext = context;
+  state.paused = true;
+  state.awaitingLevelChoice = true;
+  levelUpTitle.textContent = context === 'CHEST' ? 'Treasure Found!' : 'Level Up!';
   levelUpOptions.innerHTML = '';
-  options.forEach((choice, index) => {
+  options.forEach((choice) => {
     const btn = document.createElement('button');
     btn.textContent = describeChoice(choice);
-    btn.addEventListener('click', () => {
-      applyChoice(choice);
-      hideLevelUp();
-    });
+    btn.onclick = () => handleChoiceSelection(choice);
     levelUpOptions.appendChild(btn);
   });
-  skipLevelUpBtn.onclick = () => {
-    hideLevelUp();
-  };
+  if (context === 'LEVEL_UP') {
+    skipLevelUpBtn.style.display = 'block';
+    skipLevelUpBtn.disabled = false;
+    skipLevelUpBtn.onclick = () => handleChoiceSelection(null);
+  } else {
+    skipLevelUpBtn.style.display = 'none';
+    skipLevelUpBtn.disabled = true;
+    skipLevelUpBtn.onclick = null;
+  }
   levelUpOverlay.style.display = 'flex';
+}
+
+function handleChoiceSelection(choice) {
+  if (choice) {
+    applyChoice(choice);
+    if (state.choiceContext === 'CHEST') {
+      addEventLog(`Chest reward: ${describeChoice(choice)}`);
+    }
+  }
+  hideLevelUp();
 }
 
 function describeChoice(choice) {
@@ -972,6 +1213,10 @@ function hideLevelUp() {
   levelUpOverlay.style.display = 'none';
   state.paused = false;
   state.awaitingLevelChoice = false;
+
+  state.currentChoices = [];
+  state.choiceContext = null;
+
 }
 
 function applyChoice(choice) {
@@ -1079,15 +1324,21 @@ function addOtherItem(kind) {
 
 function updateMultipliers(dt, moving) {
   const player = state.player;
+
+  const stopInterval = 0.2;
+
   for (const mult of player.multipliers) {
     if (mult.kind === 'STOP') {
       if (!moving) {
         mult.chainSec += dt;
-        if (mult.chainSec >= 1) {
-          const ticks = Math.floor(mult.chainSec);
-          mult.chainSec -= ticks;
+
+        if (mult.chainSec >= stopInterval) {
+          const ticks = Math.floor(mult.chainSec / stopInterval);
+          mult.chainSec -= ticks * stopInterval;
           const data = CONFIG.multipliers.STOP;
-          const gainPerTick = data.perSecAdd * (1 + data.perLevelAccel * (mult.level - 1));
+          const gainPerSecond = data.perSecAdd * (1 + data.perLevelAccel * (mult.level - 1));
+          const gainPerTick = gainPerSecond * stopInterval;
+
           const totalGain = gainPerTick * ticks;
           mult.value += totalGain;
           addEventLog(`STOP +${totalGain.toFixed(3)} → ×${mult.value.toFixed(3)}`);
@@ -1138,33 +1389,14 @@ function applyMultiplierEvent(type) {
 }
 
 function openChest(chest) {
-  applyMultiplierEvent('CHEST');
-  const loot = rollChestLoot();
-  applyChoice(loot);
-  addEventLog(`Chest opened: ${describeChoice(loot)}`);
-}
 
-function rollChestLoot() {
-  const weights = CONFIG.chest.lootWeights;
-  const entries = [
-    { value: 'WEAPON', weight: weights.WEAPON },
-    { value: 'MULTIPLIER', weight: weights.MULTIPLIER },
-    { value: 'OTHER', weight: weights.OTHER }
-  ];
-  const type = state.rng.weightedPick(entries);
-  let id;
-  switch (type) {
-    case 'WEAPON':
-      id = state.rng.pick(Object.keys(CONFIG.weapons));
-      break;
-    case 'MULTIPLIER':
-      id = state.rng.pick(Object.keys(CONFIG.multipliers));
-      break;
-    case 'OTHER':
-      id = state.rng.pick(Object.keys(CONFIG.otherItems));
-      break;
-  }
-  return { type, id };
+  if (state.awaitingLevelChoice) return false;
+  applyMultiplierEvent('CHEST');
+  addEventLog('Chest opened!');
+  const choices = levelUpRoll();
+  presentChoiceOverlay('CHEST', choices);
+  return true;
+
 }
 
 function breakPillar() {
@@ -1206,6 +1438,9 @@ function render() {
   drawEnemies();
   drawEnemyBullets();
   drawPlayerBullets();
+
+  drawMeleeIndicators();
+
   drawPlayer();
   drawHud();
   ctx.restore();
@@ -1278,6 +1513,44 @@ function drawPlayerBullets() {
     ctx.fill();
   }
 }
+
+function drawMeleeIndicators() {
+  if (!state.meleeIndicators.length) return;
+  ctx.save();
+  ctx.fillStyle = '#81d4fa';
+  for (const indicator of state.meleeIndicators) {
+    const alpha = clamp(indicator.ttl / indicator.duration, 0, 1) * 0.7;
+    ctx.globalAlpha = alpha;
+    const center = worldToScreen(indicator.center);
+    if (indicator.type === 'arc') {
+      ctx.beginPath();
+      ctx.moveTo(center.x, center.y);
+      ctx.arc(center.x, center.y, indicator.radius, indicator.startAngle, indicator.endAngle);
+      ctx.closePath();
+      ctx.fill();
+    } else if (indicator.type === 'cone') {
+      const halfArc = indicator.arc / 2;
+      const dir1 = indicator.angle - halfArc;
+      const dir2 = indicator.angle + halfArc;
+      const p1 = {
+        x: center.x + Math.cos(dir1) * indicator.length,
+        y: center.y + Math.sin(dir1) * indicator.length
+      };
+      const p2 = {
+        x: center.x + Math.cos(dir2) * indicator.length,
+        y: center.y + Math.sin(dir2) * indicator.length
+      };
+      ctx.beginPath();
+      ctx.moveTo(center.x, center.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
 
 function drawXpOrbs() {
   ctx.fillStyle = '#ffee58';
